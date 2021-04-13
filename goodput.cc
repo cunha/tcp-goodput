@@ -86,6 +86,7 @@ ModelRate GoodputBps(uint64_t totalBytes,
     int64_t rtts = 0;
     int64_t cumulativePkts = 0;
     int64_t cwnd = initCwndPkts;
+    std::chrono::microseconds modelTime;
     // O(log2(xferPkts/initCwndPkts)) iterations
     while (xferPkts > cumulativePkts) {
         // Check if we can transmit at the next cwnd's rate
@@ -102,10 +103,10 @@ ModelRate GoodputBps(uint64_t totalBytes,
 
         auto xmissionTime = std::chrono::microseconds((totalBytes - cumulativePkts * mssBytes)
                 * MICROS_IN_SEC / tputBps);
-        std::chrono::microseconds modelTime = (minRtt * (rtts + 1)) + xmissionTime + ssXmissionTime;
+        modelTime = (minRtt * (rtts + 1)) + xmissionTime + ssXmissionTime;
 
         if (totalTime >= modelTime) {
-            // Cannot transfer at the next cwnd rate.
+            // Cannot transfer at the next cwnd rate. Found the number of RTTs in slow start.
             break;
         }
         rtts++;
@@ -114,8 +115,14 @@ ModelRate GoodputBps(uint64_t totalBytes,
     }
 
     if (xferPkts <= cumulativePkts) {
-        // It appears the connection is faster than our model predicts.
-        // We backtrack one cwnd and *underestimate* the achievable rate.
+        // The connection is very fast and seems to have finished without leaving slow start.
+        assert(totalTime < modelTime);
+        // We backtrack one cwnd to undo the increment at the end of
+        // each iteration and retrieve the amount of RTTs when a full
+        // cwnd was transmitted while in slow start. The connection may
+        // be faster than our model predicts; we check for these cases
+        // and return ModelResult::ERROR_TRANSFER_FASTER_THAN_MODEL
+        // below.
         cwnd >>= 1;
         cumulativePkts -= cwnd;
         rtts--;
@@ -123,19 +130,19 @@ ModelRate GoodputBps(uint64_t totalBytes,
 
     std::chrono::microseconds remainingTime = totalTime - (minRtt * (rtts + 1));
     if (remainingTime.count() <= 0) {
+        // It appears the connection is faster than our model predicts, e.g., because the cwnd
+        // grew *faster* than exponentially.
         return {0, 0, 0, 0, ModelResult::ERROR_TRANSFER_FASTER_THAN_MODEL};
     }
 
     // We add `rtts` packets to remainingPkts as we have not included
     // the transmission time of these in remainingTimeSec above as the
-    // rate is yet unknown. (remainingTimeSec is larger than in the
+    // rate is yet unknown. (remainingTime is larger than in the
     // model, so we increase remainingBytes proportionately.) This is
     // the added "drift" delay due to transmission times between
     // consecutive cwnd transmissions during slow start.
     int64_t remainingPkts = xferPkts - cumulativePkts + rtts;
-    if (remainingPkts <= 0) {
-        return {0, 0, 0, 0, ModelResult::ERROR_TRANSFER_FASTER_THAN_MODEL};
-    }
+    assert(remainingPkts > 0);
     int64_t remainingBytes = remainingPkts * mssBytes;
     int64_t achievedBps = remainingBytes * MICROS_IN_SEC / remainingTime.count();
 
