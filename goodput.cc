@@ -18,6 +18,8 @@
 #include <chrono>
 #include <cmath>
 
+#include <iostream>
+
 #define MICROS_IN_SEC 1000000
 
 enum class ModelResult {
@@ -89,6 +91,8 @@ ModelRate GoodputBps(uint64_t totalBytes,
     std::chrono::microseconds modelTime;
     // O(log2(xferPkts/initCwndPkts)) iterations
     while (xferPkts > cumulativePkts) {
+        std::cout << "rtt=" << rtts << " cwnd=" << cwnd << " cumPkts=" << cumulativePkts << std::endl;
+
         // Check if we can transmit at the next cwnd's rate
         int64_t tputBps = cwnd * mssBytes * MICROS_IN_SEC / minRtt.count();
         if (tputBps == 0) {
@@ -107,6 +111,7 @@ ModelRate GoodputBps(uint64_t totalBytes,
 
         if (totalTime >= modelTime) {
             // Cannot transfer at the next cwnd rate. Found the number of RTTs in slow start.
+            std::cout << "Cannot transfer at the next cwnd rate. Breaking." << std::endl;
             break;
         }
         rtts++;
@@ -150,4 +155,16 @@ ModelRate GoodputBps(uint64_t totalBytes,
 
     return {uint32_t(achievedBps), uint32_t(rtts), uint64_t(projectedCwndPkts),
             uint64_t(cwnd), ModelResult::OK};
+}
+
+int main(void) {
+    ModelRate mr = GoodputBps(10000, 1, 1000, std::chrono::microseconds(1000000), std::chrono::microseconds(4000000));
+
+    std::cout << "bytesPerSec=" << mr.bytesPerSec << std::endl;
+    std::cout << "rttsInSlowStart=" << mr.rttsInSlowStart << std::endl;
+    std::cout << "projectedCwndPkts=" << mr.projectedCwndPkts << std::endl;
+    std::cout << "lastFullCwndPkts=" << mr.lastFullCwndPkts << std::endl;
+    if (mr.status == ModelResult::OK) {
+        std::cout << "status=OK" << std::endl;
+    }
 }
